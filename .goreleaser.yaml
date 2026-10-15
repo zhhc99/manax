@@ -1,0 +1,28 @@
+version: 2
+project_name: manax
+
+builds:
+  - main: ./cmd/manax
+    binary: manax
+    env: [ "CGO_ENABLED=0" ]
+    ldflags:
+      - -s -w -X 'github.com/zhhc99/manax/internal/cli.Version={{.Version}}'
+    goos: [ linux, windows, darwin ]
+    goarch: [ amd64, arm64 ]
+
+archives:
+  - formats: [ tar.gz ]
+    format_overrides:
+      - goos: windows
+        formats: [ zip ]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  disable: true
