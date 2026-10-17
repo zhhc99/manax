@@ -18,7 +18,13 @@ const reloadLabel = "com.manax.reload"
 
 // InstallSystem installs the binary, resources and launchd daemon.
 func InstallSystem(self, resources string) error {
+	if err := config.EnsureDataDir(); err != nil {
+		return err
+	}
 	if err := installKernel(resources); err != nil {
+		return err
+	}
+	if err := installGeoData(resources); err != nil {
 		return err
 	}
 	if err := InstallBinary(self); err != nil {
@@ -100,7 +106,8 @@ func removeLogin(u config.UserInfo) (string, error) {
 }
 
 // Elevate re-runs the command with administrator privileges using osascript.
-func Elevate(exe string, args []string) error {
+// The helper shares this terminal's output, so nothing needs relaying.
+func Elevate(exe string, args []string) (string, error) {
 	command := shellQuote(exe)
 	for _, a := range args {
 		command += " " + shellQuote(a)
@@ -108,7 +115,10 @@ func Elevate(exe string, args []string) error {
 	script := "do shell script " + appleQuote(command) + " with administrator privileges"
 	cmd := exec.Command("osascript", "-e", script)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return "", ErrElevatedFailed
+	}
+	return "", nil
 }
 
 func shellQuote(s string) string {

@@ -3,6 +3,7 @@
 package ipc
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -38,6 +39,11 @@ func listen() (net.Listener, error) {
 
 func dial() (net.Conn, error) {
 	return net.Dial("unix", config.SocketPath)
+}
+
+func dialContext(ctx context.Context) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, "unix", config.SocketPath)
 }
 
 func isServicePresent() bool {

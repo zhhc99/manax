@@ -36,21 +36,33 @@ func (s *service) Execute(_ []string, r <-chan svc.ChangeRequest, status chan<- 
 
 	d := New()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- d.Serve(ctx) }()
 
 	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
-	for c := range r {
-		switch c.Cmd {
-		case svc.Stop, svc.Shutdown:
-			status <- svc.Status{State: svc.StopPending}
-			cancel()
-			<-done
+	for {
+		select {
+		case err := <-done:
+			// Report a startup or runtime failure to the SCM instead of
+			// pretending to be a running service that does nothing.
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return true, 1
+			}
 			return false, 0
+		case c, ok := <-r:
+			if !ok {
+				cancel()
+				<-done
+				return false, 0
+			}
+			if c.Cmd == svc.Stop || c.Cmd == svc.Shutdown {
+				status <- svc.Status{State: svc.StopPending}
+				cancel()
+				<-done
+				return false, 0
+			}
 		}
 	}
-	cancel()
-	<-done
-	fmt.Fprintln(os.Stderr, "manax service stopped")
-	return false, 0
 }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -42,7 +41,7 @@ type Daemon struct {
 // New builds a daemon with no user config loaded.
 func New() *Daemon {
 	return &Daemon{
-		kernel: core.NewKernel(config.KernelPath, filepath.Join(config.RuntimeDir, "kernel.log")),
+		kernel: core.NewKernel(config.KernelPath, filepath.Join(config.WorkDir, "kernel.log")),
 		api:    core.NewClient(core.APIBase, ""),
 		mode:   "rule",
 		delays: map[string]int{},
@@ -51,7 +50,12 @@ func New() *Daemon {
 
 // Serve starts the IPC server and blocks until ctx is cancelled.
 func (d *Daemon) Serve(ctx context.Context) error {
-	_ = os.MkdirAll(config.RuntimeDir, 0755)
+	if err := config.EnsureWorkDir(); err != nil {
+		return err
+	}
+	if err := config.LinkGeoData(); err != nil {
+		return err
+	}
 	srv, err := ipc.NewServer(d)
 	if err != nil {
 		if errors.Is(err, ipc.ErrAlreadyRunning) {
@@ -143,9 +147,8 @@ func (d *Daemon) apply(req ipc.ApplyRequest) error {
 	if req.Mode == "" {
 		req.Mode = "rule"
 	}
-	_ = os.MkdirAll(config.RuntimeDir, 0755)
 
-	runtimePath, workDir, proxyAddr, err := core.BuildRuntimeConfig(req.ConfigPath, req.Mode, req.TUN)
+	runtimePath, proxyAddr, err := core.BuildRuntimeConfig(req.ConfigPath, req.Mode, req.TUN, config.WorkDir)
 	if err != nil {
 		return err
 	}
@@ -153,7 +156,7 @@ func (d *Daemon) apply(req ipc.ApplyRequest) error {
 	d.mu.Lock()
 	d.configPath = req.ConfigPath
 	d.configName = req.ConfigName
-	d.workDir = workDir
+	d.workDir = config.WorkDir
 	d.mode = req.Mode
 	d.tunOn = req.TUN
 	d.proxyAddr = proxyAddr
@@ -161,7 +164,7 @@ func (d *Daemon) apply(req ipc.ApplyRequest) error {
 	d.mu.Unlock()
 	d.api.ResetProviders() // provider membership belongs to the loaded config
 
-	if err := d.kernel.Start(runtimePath, workDir); err != nil {
+	if err := d.kernel.Start(runtimePath, config.WorkDir); err != nil {
 		return fmt.Errorf("start kernel: %w", err)
 	}
 	if err := d.waitAPI(5 * time.Second); err != nil {

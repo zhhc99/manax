@@ -23,7 +23,7 @@ func runInstall(args []string) error {
 	// Elevated helper spawned by the parent. Resource downloads and prompts
 	// have already completed in the unprivileged process.
 	if len(args) > 0 && args[0] == "--system-phase" {
-		if len(args) != 2 {
+		if len(args) > 2 {
 			return fmt.Errorf("%s", locale.T("err.install_phase_args"))
 		}
 		if !config.IsElevated() {
@@ -33,7 +33,13 @@ func runInstall(args []string) error {
 		if err != nil {
 			return err
 		}
-		return installSystemPhase(self, args[1])
+		// No resource package means the kernel and GeoData are already
+		// installed, so the helper only verifies and registers them.
+		var bundle string
+		if len(args) == 2 {
+			bundle = args[1]
+		}
+		return installSystemPhase(self, bundle)
 	}
 	if len(args) != 0 {
 		return fmt.Errorf(locale.T("err.invalid_arg"), args[0])
@@ -62,29 +68,32 @@ func runInstall(args []string) error {
 	if cleanup != nil {
 		defer cleanup()
 	}
-	if bundle != "" {
-		dir, err := config.ConfigsDir()
-		if err != nil {
-			return err
-		}
-		if err := service.InstallGeoDataPackage(bundle, dir); err != nil {
-			return err
-		}
-		fmt.Printf(locale.T("msg.installed_geodata")+"\n", dir)
-	}
-
 	if config.IsElevated() {
 		if err := installSystemPhase(self, bundle); err != nil {
 			return err
 		}
 	} else {
 		fmt.Fprintln(os.Stderr, locale.T("msg.elevating"))
-		if err := service.Elevate(self, []string{"install", "--system-phase", bundle}); err != nil {
-			if errors.Is(err, service.ErrNeedSudo) {
+		elevateArgs := []string{"install", "--system-phase"}
+		if bundle != "" {
+			elevateArgs = append(elevateArgs, bundle)
+		}
+		out, err := service.Elevate(self, elevateArgs)
+		if out != "" {
+			fmt.Fprint(os.Stderr, out)
+		}
+		if err != nil {
+			switch {
+			case errors.Is(err, service.ErrNeedSudo):
 				return fmt.Errorf("%s", locale.T("msg.need_sudo"))
+			case errors.Is(err, service.ErrElevatedFailed):
+				if out == "" {
+					return fmt.Errorf("%s", locale.T("err.elevate_failed"))
+				}
+				return ErrSilent
+			default:
+				return err
 			}
-			// The elevated helper already reported the failure.
-			return ErrSilent
 		}
 	}
 
@@ -106,6 +115,7 @@ func installSystemPhase(self, bundle string) error {
 	}
 	fmt.Printf(locale.T("msg.installed_binary")+"\n", config.InstallBin)
 	fmt.Printf(locale.T("msg.installed_kernel")+"\n", config.KernelPath)
+	fmt.Printf(locale.T("msg.installed_geodata")+"\n", config.DataDir)
 	fmt.Printf(locale.T("msg.installed_service")+"\n", config.ServiceName)
 	return nil
 }
@@ -115,11 +125,7 @@ func promptInstallResources() (string, func(), error) {
 		return "", nil, fmt.Errorf("%s", locale.T("err.resource_no_tty"))
 	}
 	r := bufio.NewReader(os.Stdin)
-	geoDir, err := config.ConfigsDir()
-	if err != nil {
-		return "", nil, err
-	}
-	if service.HasInstallResources(geoDir) {
+	if service.HasInstallResources() {
 		fmt.Fprint(os.Stderr, locale.T("msg.install_resources_found"))
 		switch strings.ToLower(readLine(r)) {
 		case "", "y", "yes":
@@ -240,11 +246,22 @@ func runUninstall(_ []string) error {
 		return err
 	}
 	if !config.IsElevated() {
-		if err := service.Elevate(self, []string{"uninstall"}); err != nil {
-			if errors.Is(err, service.ErrNeedSudo) {
+		out, err := service.Elevate(self, []string{"uninstall"})
+		if out != "" {
+			fmt.Fprint(os.Stderr, out)
+		}
+		if err != nil {
+			switch {
+			case errors.Is(err, service.ErrNeedSudo):
 				return fmt.Errorf("%s", locale.T("msg.need_sudo"))
+			case errors.Is(err, service.ErrElevatedFailed):
+				if out == "" {
+					return fmt.Errorf("%s", locale.T("err.elevate_failed"))
+				}
+				return ErrSilent
+			default:
+				return err
 			}
-			return ErrSilent
 		}
 		if dir, err := config.UserDir(); err == nil {
 			fmt.Printf(locale.T("msg.kept_config")+"\n", dir)
