@@ -15,7 +15,7 @@ func Apply(doc map[string]any, on bool) {
 		t["auto-route"] = true
 		t["auto-detect-interface"] = true
 		t["strict-route"] = false
-		t["dns-hijack"] = []any{"any:53"}
+		t["dns-hijack"] = []any{"any:53", "tcp://any:53"}
 		applyDNS(doc)
 	}
 	doc["tun"] = t
@@ -36,12 +36,10 @@ func applyDNS(doc map[string]any) {
 		return
 	}
 	d["enable"] = true
-
-	// nameserver override
 	d["default-nameserver"] = []any{
-		// "system",
+		"system",
 		"8.8.8.8",
-		// "223.6.6.6",
+		"223.6.6.6",
 	}
 	d["nameserver"] = []any{
 		"https://doh.pub/dns-query",
@@ -52,7 +50,6 @@ func applyDNS(doc map[string]any) {
 		"https://dns.alidns.com/dns-query",
 		"tls://223.5.5.5",
 	}
-
 	setDefault(d, "enhanced-mode", "fake-ip")
 	setDefault(d, "fake-ip-range", "198.18.0.1/16")
 	doc["dns"] = d
