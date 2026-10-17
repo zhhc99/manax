@@ -13,3 +13,11 @@
 - Linux: 依赖 systemd 的 control-group 杀掉 meta.
 - macOS: 依赖 launchd 的 AbandonProcessGroup=false 行为, meta 被视作 daemon 的子进程而被杀死.
 - Windows: 依赖 SCM 的 Job Object, daemon 终止时 job 句柄关闭, meta 作为 job 内的进程被杀死.
+
+## TUN 与 DNS 接管
+
+开启 TUN 时, DNS 查询理应被 meta 内核接管 (从而避免泄露). manax 的实现是:
+
+- 开启 `tun.dns-hijack`.
+- 如果订阅的 `enhanced-mode` 为 `fake-ip` 或未指定, 向配置中写入 DNS 接管策略.
+- 沿用订阅的 ipv6 配置.
