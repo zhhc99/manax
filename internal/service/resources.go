@@ -26,17 +26,15 @@ const geoDataRepo = "MetaCubeX/meta-rules-dat"
 
 const githubConnectivityTimeout = 10 * time.Second
 
-var geoDataFiles = []string{"geoip.dat", "geosite.dat", "country.mmdb", "GeoLite2-ASN.mmdb"}
-
-// HasInstallResources reports whether the current user already has the kernel
-// and all GeoData needed by Manax.
-func HasInstallResources(geoDir string) bool {
+// HasInstallResources reports whether the kernel and all GeoData needed by
+// Manax are already installed system-wide.
+func HasInstallResources() bool {
 	info, err := os.Stat(config.KernelPath)
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return false
 	}
-	for _, name := range geoDataFiles {
-		info, err := os.Stat(filepath.Join(geoDir, name))
+	for _, name := range config.GeoDataFiles {
+		info, err := os.Stat(filepath.Join(config.DataDir, name))
 		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 			return false
 		}
@@ -90,7 +88,7 @@ func BuildGitHubResourcePackage(ctx context.Context, dst string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range geoDataFiles {
+	for _, name := range config.GeoDataFiles {
 		asset, ok := assets[name]
 		if !ok || asset.SHA256 == "" {
 			return fmt.Errorf("missing checksum for %s", name)
@@ -145,7 +143,7 @@ func ValidateResourcePackage(path string) error {
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		if contains(geoDataFiles, f.Name) {
+		if contains(config.GeoDataFiles, f.Name) {
 			if seen[f.Name] {
 				return fmt.Errorf("%s: duplicate %s", locale.T("err.resource_zip"), f.Name)
 			}
@@ -157,7 +155,7 @@ func ValidateResourcePackage(path string) error {
 	if kernels != 1 {
 		return errors.New(locale.T("err.resource_missing_kernel"))
 	}
-	for _, name := range geoDataFiles {
+	for _, name := range config.GeoDataFiles {
 		if !seen[name] {
 			return fmt.Errorf("%s: %s", locale.T("err.resource_missing_file"), name)
 		}
@@ -179,7 +177,7 @@ func InstallKernelPackage(path string) error {
 	}
 	defer zr.Close()
 	for _, f := range zr.File {
-		if f.FileInfo().IsDir() || contains(geoDataFiles, f.Name) {
+		if f.FileInfo().IsDir() || contains(config.GeoDataFiles, f.Name) {
 			continue
 		}
 		r, err := f.Open()
@@ -199,12 +197,13 @@ func InstallKernelPackage(path string) error {
 	return nil
 }
 
-// InstallGeoDataPackage writes GeoData beside the user's Manax configs.
+// InstallGeoDataPackage writes the shared GeoData into the system data
+// directory, where ordinary users can read but not modify it.
 func InstallGeoDataPackage(path, destination string) error {
 	if err := ValidateResourcePackage(path); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(destination, 0700); err != nil {
+	if err := os.MkdirAll(destination, 0755); err != nil {
 		return err
 	}
 	zr, err := zip.OpenReader(path)
@@ -213,7 +212,7 @@ func InstallGeoDataPackage(path, destination string) error {
 	}
 	defer zr.Close()
 	for _, f := range zr.File {
-		if !contains(geoDataFiles, f.Name) {
+		if !contains(config.GeoDataFiles, f.Name) {
 			continue
 		}
 		r, err := f.Open()
@@ -263,9 +262,9 @@ func latestGeoDataAssets(ctx context.Context) (map[string]geoAsset, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]geoAsset, len(geoDataFiles))
+	out := make(map[string]geoAsset, len(config.GeoDataFiles))
 	for _, asset := range info.Assets {
-		if contains(geoDataFiles, asset.Name) {
+		if contains(config.GeoDataFiles, asset.Name) {
 			out[asset.Name] = geoAsset{
 				URL:    fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", geoDataRepo, asset.Name),
 				SHA256: digestValue(asset.Digest),

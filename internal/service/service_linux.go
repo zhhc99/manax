@@ -16,7 +16,13 @@ import (
 
 // InstallSystem installs the binary, resources and systemd service.
 func InstallSystem(self, resources string) error {
+	if err := config.EnsureDataDir(); err != nil {
+		return err
+	}
 	if err := installKernel(resources); err != nil {
+		return err
+	}
+	if err := installGeoData(resources); err != nil {
 		return err
 	}
 	if err := InstallBinary(self); err != nil {
@@ -56,6 +62,8 @@ func UninstallSystem() error {
 		fmt.Printf(locale.T("msg.removed_path")+"\n", config.InstallBin)
 	}
 	removeDir(config.InstallDir)
+	removeDir(config.DataDir)
+	removeDir(config.RuntimeDir)
 	return nil
 }
 
@@ -139,28 +147,32 @@ func chownParents(home, path string, u config.UserInfo) {
 }
 
 // Elevate re-runs the command with administrator privileges, preferring
-// pkexec and falling back to an internal sudo subprocess.
-func Elevate(exe string, args []string) error {
+// pkexec and falling back to an internal sudo subprocess. The helper shares
+// this terminal, so its error output needs no relaying.
+func Elevate(exe string, args []string) (string, error) {
 	argv := append([]string{exe}, args...)
 
 	if pkexec, err := exec.LookPath("pkexec"); err == nil {
 		err = runPrivileged(pkexec, argv)
 		if err == nil {
-			return nil
+			return "", nil
 		}
 		// pkexec could not obtain authorization (no polkit agent etc.) -
 		// fall back to sudo. Other exit codes come from the helper itself.
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) || (ee.ExitCode() != 126 && ee.ExitCode() != 127) {
-			return err
+			return "", ErrElevatedFailed
 		}
 	}
 
 	sudo, err := exec.LookPath("sudo")
 	if err != nil {
-		return ErrNeedSudo
+		return "", ErrNeedSudo
 	}
-	return runPrivileged(sudo, argv)
+	if err := runPrivileged(sudo, argv); err != nil {
+		return "", ErrElevatedFailed
+	}
+	return "", nil
 }
 
 func runPrivileged(bin string, argv []string) error {

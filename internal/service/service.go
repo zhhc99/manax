@@ -14,11 +14,21 @@ import (
 	"github.com/zhhc99/manax/internal/locale"
 )
 
+// PostInstallHint is an optional note for the caller to print after a
+// successful system install. Platform code sets it when the user needs to
+// act, e.g. restart the terminal after PATH changed on Windows.
+var PostInstallHint string
+
 // KernelRepo is the compatible kernel release source.
 const KernelRepo = "MetaCubeX/mihomo"
 
 // ErrNeedSudo is returned when elevation requires the user to run sudo.
 var ErrNeedSudo = errors.New("pkexec is not available")
+
+// ErrElevatedFailed is returned when the elevated helper ran and failed. Its
+// output has already been handed to the caller, so there is nothing left to
+// report.
+var ErrElevatedFailed = errors.New("elevated command failed")
 
 func installKernel(resources string) error {
 	if resources != "" {
@@ -27,6 +37,21 @@ func installKernel(resources string) error {
 	info, err := os.Stat(config.KernelPath)
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("kernel not found at %s", config.KernelPath)
+	}
+	return nil
+}
+
+// installGeoData installs the shared GeoData from a resource package, or
+// verifies an existing system-wide installation when none is given.
+func installGeoData(resources string) error {
+	if resources != "" {
+		return InstallGeoDataPackage(resources, config.DataDir)
+	}
+	for _, name := range config.GeoDataFiles {
+		info, err := os.Stat(filepath.Join(config.DataDir, name))
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			return fmt.Errorf("geodata not found at %s: %s", config.DataDir, name)
+		}
 	}
 	return nil
 }

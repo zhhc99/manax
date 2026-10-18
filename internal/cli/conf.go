@@ -242,7 +242,7 @@ func downloadTo(url, dst string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf(locale.T("err.download"), fmt.Sprintf("http %d", resp.StatusCode))
 	}
-	f, err := os.Create(dst)
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf(locale.T("err.write"), err)
 	}
@@ -262,7 +262,7 @@ func copyTo(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 		return err
 	}
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf(locale.T("err.write"), err)
 	}

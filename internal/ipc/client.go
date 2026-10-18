@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/zhhc99/manax/internal/locale"
 )
 
 var httpClient = &http.Client{
+	Timeout: 60 * time.Second,
 	Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dial()
+			return dialContext(ctx)
 		},
 	},
 }

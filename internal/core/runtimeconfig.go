@@ -34,12 +34,13 @@ rules:
 }
 
 // BuildRuntimeConfig parses srcPath, injects manax-controlled settings and
-// writes a runtime config next to it. It returns the runtime path, the kernel
-// working directory and the local proxy address.
-func BuildRuntimeConfig(srcPath, mode string, tunOn bool) (runtimePath, workDir, proxyAddr string, err error) {
+// writes a runtime config into workDir, the daemon-owned kernel home. The
+// user's own config stays where the user put it; the generated copy, which the
+// privileged kernel reads, never sits in a user-writable directory.
+func BuildRuntimeConfig(srcPath, mode string, tunOn bool, workDir string) (runtimePath, proxyAddr string, err error) {
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 	doc := map[string]any{}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
@@ -66,16 +67,15 @@ func BuildRuntimeConfig(srcPath, mode string, tunOn bool) (runtimePath, workDir,
 	}
 	proxyAddr = fmt.Sprintf("%s:%d", APIHost, port)
 
-	workDir = filepath.Dir(srcPath)
 	out, err := yaml.Marshal(doc)
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 	runtimePath = filepath.Join(workDir, RuntimeFileName)
 	if err := os.WriteFile(runtimePath, out, 0600); err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
-	return runtimePath, workDir, proxyAddr, nil
+	return runtimePath, proxyAddr, nil
 }
 
 // subscriptionDoc wraps a subscription file in a minimal Clash config so

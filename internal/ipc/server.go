@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // Server exposes the daemon handler over a local transport.
@@ -96,7 +97,7 @@ func NewServer(h Handler) (*Server, error) {
 		}
 	})
 
-	return &Server{l: l, http: &http.Server{Handler: mux}}, nil
+	return &Server{l: l, http: &http.Server{Handler: mux, ReadHeaderTimeout: 30 * time.Second}}, nil
 }
 
 // Serve blocks until the server is closed.
