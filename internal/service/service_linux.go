@@ -62,6 +62,8 @@ func UninstallSystem() error {
 		fmt.Printf(locale.T("msg.removed_path")+"\n", config.InstallBin)
 	}
 	removeDir(config.InstallDir)
+	removeDir(config.DataDir)
+	removeDir(config.RuntimeDir)
 	return nil
 }
 

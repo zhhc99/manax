@@ -34,6 +34,9 @@ func ensureDir(dir, sddl string) error {
 	if err != nil {
 		return err
 	}
+	// The "P" in the SDDL is ignored here; inheritance from ProgramData (which
+	// lets Users create files) is only blocked by this explicit flag.
 	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil)
 }
