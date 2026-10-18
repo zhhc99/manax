@@ -117,6 +117,9 @@ func installSystemPhase(self, bundle string) error {
 	fmt.Printf(locale.T("msg.installed_kernel")+"\n", config.KernelPath)
 	fmt.Printf(locale.T("msg.installed_geodata")+"\n", config.DataDir)
 	fmt.Printf(locale.T("msg.installed_service")+"\n", config.ServiceName)
+	if service.PostInstallHint != "" {
+		fmt.Println(service.PostInstallHint)
+	}
 	return nil
 }
 

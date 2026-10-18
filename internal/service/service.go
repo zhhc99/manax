@@ -14,6 +14,11 @@ import (
 	"github.com/zhhc99/manax/internal/locale"
 )
 
+// PostInstallHint is an optional note for the caller to print after a
+// successful system install. Platform code sets it when the user needs to
+// act, e.g. restart the terminal after PATH changed on Windows.
+var PostInstallHint string
+
 // KernelRepo is the compatible kernel release source.
 const KernelRepo = "MetaCubeX/mihomo"
 

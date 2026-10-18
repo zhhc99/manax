@@ -19,6 +19,7 @@ import (
 	"github.com/zhhc99/manax/internal/config"
 	"github.com/zhhc99/manax/internal/locale"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -56,6 +57,11 @@ func InstallSystem(self, resources string) error {
 	if err := InstallBinary(self); err != nil {
 		return err
 	}
+	if changed, err := addToPath(config.InstallDir); err != nil {
+		return err
+	} else if changed {
+		PostInstallHint = locale.T("msg.path_added", config.InstallDir, refreshPathCmd)
+	}
 
 	if s == nil {
 		s, err = m.CreateService(config.ServiceName, config.InstallBin, mgr.Config{
@@ -79,6 +85,76 @@ func InstallSystem(self, resources string) error {
 		}
 	}
 	return s.Start()
+}
+
+// refreshPathCmd reloads PATH in the current PowerShell session.
+const refreshPathCmd = `$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')`
+
+const envKey = `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
+
+// updatePath rewrites the machine-wide PATH with fn and tells running programs
+// (Explorer, new terminals) to reload their environment. Already-open
+// terminals keep the old PATH until they are restarted.
+func updatePath(fn func(entries []string) []string) (bool, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, envKey, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return false, err
+	}
+	defer k.Close()
+	// GetStringValue returns REG_EXPAND_SZ unexpanded, so %SystemRoot% etc. survive.
+	val, _, err := k.GetStringValue("Path")
+	if err != nil && err != registry.ErrNotExist {
+		return false, err
+	}
+	var entries []string
+	if val != "" {
+		entries = strings.Split(val, ";")
+	}
+	out := strings.Join(fn(entries), ";")
+	if out == val {
+		return false, nil
+	}
+	if err := k.SetExpandStringValue("Path", out); err != nil {
+		return false, err
+	}
+	env, _ := windows.UTF16PtrFromString("Environment")
+	var res uintptr
+	// HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", SMTO_ABORTIFHUNG, 5000ms
+	windows.NewLazySystemDLL("user32.dll").NewProc("SendMessageTimeoutW").Call(
+		0xFFFF, 0x1A, 0, uintptr(unsafe.Pointer(env)), 0x2, 5000, uintptr(unsafe.Pointer(&res)))
+	return true, nil
+}
+
+func samePath(a, b string) bool {
+	return strings.EqualFold(strings.TrimRight(a, `\`), strings.TrimRight(b, `\`))
+}
+
+// addToPath appends dir to the machine PATH unless it is already there.
+func addToPath(dir string) (bool, error) {
+	return updatePath(func(entries []string) []string {
+		for _, e := range entries {
+			if samePath(e, dir) {
+				return entries
+			}
+		}
+		if n := len(entries); n > 0 && entries[n-1] == "" {
+			entries = entries[:n-1] // drop the trailing ';'
+		}
+		return append(entries, dir)
+	})
+}
+
+// removePath drops dir from the machine PATH.
+func removePath(dir string) (bool, error) {
+	return updatePath(func(entries []string) []string {
+		kept := entries[:0:0]
+		for _, e := range entries {
+			if !samePath(e, dir) {
+				kept = append(kept, e)
+			}
+		}
+		return kept
+	})
 }
 
 // stopService asks the service to stop and waits for the process to exit.
@@ -119,6 +195,7 @@ func UninstallSystem() error {
 		}
 		m.Disconnect()
 	}
+	_, _ = removePath(config.InstallDir)
 	removeDir(config.InstallDir)
 	removeDir(config.DataDir)
 	return nil

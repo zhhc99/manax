@@ -82,6 +82,7 @@
   "msg.installed_kernel": "内核已就绪: %s",
   "msg.installed_geodata": "已写入 GeoData 到 %s",
   "msg.installed_service": "已注册系统服务 %s",
+  "msg.path_added": "%s 已经加入 PATH. 请重启终端. 如果这是 PowerShell, 也可以执行:\n%s",
   "msg.installed_login": "已为用户 %s 创建登录任务",
   "msg.uninstalling": "正在卸载...",
   "msg.removed_task": "已移除登录任务: %s",

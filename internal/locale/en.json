@@ -82,6 +82,7 @@
   "msg.installed_kernel": "Kernel ready at %s",
   "msg.installed_geodata": "Wrote GeoData to %s",
   "msg.installed_service": "Registered system service %s",
+  "msg.path_added": "%s has been added to PATH. Restart your terminal. In PowerShell you can also run:\n%s",
   "msg.installed_login": "Created login task for user %s",
   "msg.uninstalling": "Uninstalling...",
   "msg.removed_task": "Removed login task: %s",
