@@ -88,6 +88,7 @@
   "msg.removed_task": "已移除登录任务: %s",
   "msg.removed_service": "已移除系统服务: %s",
   "msg.removed_path": "已移除: %s",
+  "msg.remove_manual": "受 Windows 限制, %s 仍然存在, 可以手动删除.",
   "msg.kept_config": "已保留用户配置: %s",
   "msg.need_sudo": "需要管理员权限, 且无法自动提权. 请以 root 身份或使用 sudo 重新运行当前命令.",
   "msg.elevating": "资源准备完成. 正在请求管理员授权...",

@@ -198,6 +198,10 @@ func UninstallSystem() error {
 	_, _ = removePath(config.InstallDir)
 	removeDir(config.InstallDir)
 	removeDir(config.DataDir)
+	// manax.exe is usually the running image, which Windows cannot delete.
+	if _, err := os.Stat(config.InstallDir); err == nil {
+		fmt.Printf(locale.T("msg.remove_manual")+"\n", config.InstallDir)
+	}
 	return nil
 }
 

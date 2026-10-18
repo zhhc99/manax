@@ -88,6 +88,7 @@
   "msg.removed_task": "Removed login task: %s",
   "msg.removed_service": "Removed system service: %s",
   "msg.removed_path": "Removed: %s",
+  "msg.remove_manual": "Due to Windows restrictions, %s still exists. You can remove it manually.",
   "msg.kept_config": "Kept user config: %s",
   "msg.need_sudo": "Administrator privileges are required and elevation failed. Re-run the command as root or with sudo.",
   "msg.elevating": "Resources are ready. Requesting administrator authorization...",
