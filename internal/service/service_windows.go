@@ -3,6 +3,7 @@
 package service
 
 import (
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/zhhc99/manax/internal/config"
@@ -121,19 +124,109 @@ func UninstallSystem() error {
 	return nil
 }
 
-func installLogin(_ config.UserInfo) error {
-	tr := `"` + config.InstallBin + `" reload`
-	out, err := exec.Command("schtasks", "/Create", "/TN", config.LoginTaskName, "/SC", "ONLOGON",
-		"/TR", tr, "/F").CombinedOutput()
+// loginTaskXML is the logon task definition. The trigger and the principal are
+// both bound to one user: `schtasks /SC ONLOGON` creates a trigger for *any*
+// user, which Task Scheduler only lets administrators register ("Access is
+// denied" for the unprivileged user phase). A user-scoped trigger needs no
+// elevation. The settings also override the schtasks defaults that would skip
+// the task on battery power and kill it after 72 hours.
+const loginTaskXML = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>%[1]s</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>%[1]s</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>%[2]s</Command>
+      <Arguments>reload</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`
+
+func xmlEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
+}
+
+func installLogin(u config.UserInfo) error {
+	if u.Username == "" {
+		u = config.CurrentUser()
+	}
+	doc := fmt.Sprintf(loginTaskXML, xmlEscape(u.Username), xmlEscape(config.InstallBin))
+
+	// schtasks /XML only reads UTF-16LE with a BOM.
+	u16 := utf16.Encode([]rune(doc))
+	buf := make([]byte, 0, 2+2*len(u16))
+	buf = append(buf, 0xFF, 0xFE)
+	for _, c := range u16 {
+		buf = append(buf, byte(c), byte(c>>8))
+	}
+	f, err := os.CreateTemp("", "manax-task-*.xml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, werr := f.Write(buf)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return werr
+	}
+
+	out, err := exec.Command("schtasks", "/Create", "/TN", config.LoginTaskName,
+		"/XML", f.Name(), "/F").CombinedOutput()
 	if err == nil {
 		return nil
 	}
-	// schtasks explains the real reason (usually "Access is denied"); report it
-	// instead of a bare "exit status 1".
-	if msg := strings.TrimSpace(string(out)); msg != "" {
+	// schtasks explains the real reason; report it instead of a bare "exit status 1".
+	if msg := strings.TrimSpace(oemToUTF8(out)); msg != "" {
 		return fmt.Errorf("schtasks: %s", msg)
 	}
 	return fmt.Errorf("schtasks: %w", err)
+}
+
+var (
+	kernel32                = windows.NewLazySystemDLL("kernel32.dll")
+	procGetOEMCP            = kernel32.NewProc("GetOEMCP")
+	procMultiByteToWideChar = kernel32.NewProc("MultiByteToWideChar")
+)
+
+// oemToUTF8 decodes output of a native console tool. When stdout is a pipe,
+// tools such as schtasks write in the OEM code page (e.g. GBK on a Chinese
+// system), which would print as garbage if treated as UTF-8.
+func oemToUTF8(b []byte) string {
+	if len(b) == 0 || utf8.Valid(b) {
+		return string(b)
+	}
+	cp, _, _ := procGetOEMCP.Call()
+	src := uintptr(unsafe.Pointer(&b[0]))
+	n, _, _ := procMultiByteToWideChar.Call(cp, 0, src, uintptr(len(b)), 0, 0)
+	if n == 0 {
+		return string(b)
+	}
+	w := make([]uint16, n)
+	procMultiByteToWideChar.Call(cp, 0, src, uintptr(len(b)), uintptr(unsafe.Pointer(&w[0])), n)
+	return string(utf16.Decode(w))
 }
 
 func removeLogin(_ config.UserInfo) (string, error) {
