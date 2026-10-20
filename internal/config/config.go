@@ -114,7 +114,24 @@ func (s *State) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, data, 0600)
+	return WriteFile(p, data)
+}
+
+// WriteFile writes a temporary file before replacing the destination.
+func WriteFile(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".manax-tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // EffectiveMode returns the stored mode or the default.

@@ -165,8 +165,7 @@ func runConfUpdate(args []string) error {
 			uerr = copyTo(src.Location, path)
 		}
 		if uerr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", uerr)
-			continue
+			return uerr
 		}
 		src.Updated = config.NowStamp()
 		st.Configs[name] = src
@@ -242,33 +241,20 @@ func downloadTo(url, dst string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf(locale.T("err.download"), fmt.Sprintf("http %d", resp.StatusCode))
 	}
-	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf(locale.T("err.write"), err)
-	}
-	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
 		return fmt.Errorf(locale.T("err.download"), err)
 	}
-	return nil
+	return config.WriteFile(dst, data)
 }
 
 func copyTo(src, dst string) error {
-	in, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf(locale.T("err.write"), err)
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf(locale.T("err.write"), err)
-	}
-	return nil
+	return config.WriteFile(dst, data)
 }

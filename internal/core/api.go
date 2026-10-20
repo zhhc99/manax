@@ -37,7 +37,7 @@ type Client struct {
 
 // NewClient returns a client for the given API base URL.
 func NewClient(base, secret string) *Client {
-	return &Client{base: base, secret: secret, http: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{base: base, secret: secret, http: &http.Client{Timeout: 5 * time.Second}}
 }
 
 func (c *Client) do(method, path string, body any, out any) error {
@@ -180,4 +180,9 @@ func (c *Client) Select(group, node string) error {
 // SetMode changes the kernel running mode.
 func (c *Client) SetMode(mode string) error {
 	return c.do(http.MethodPatch, "/configs", map[string]any{"mode": mode}, nil)
+}
+
+// SetTUN toggles TUN without restarting the kernel process.
+func (c *Client) SetTUN(on bool) error {
+	return c.do(http.MethodPatch, "/configs", map[string]any{"tun": map[string]bool{"enable": on}}, nil)
 }

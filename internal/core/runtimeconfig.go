@@ -4,14 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 
+	"github.com/zhhc99/manax/internal/config"
 	"github.com/zhhc99/manax/internal/tun"
 	"gopkg.in/yaml.v3"
 )
 
-// RuntimeFileName is the generated kernel config written next to the source.
+// RuntimeFileName is the generated config in the kernel work directory.
 const RuntimeFileName = ".manax.runtime.yaml"
+
+// NodeGroupName is the internal selector containing all nodes.
+const NodeGroupName = ".manax"
 
 // EnsureDirectConfig writes the built-in configuration used when no user
 // config can be loaded. The GLOBAL group contains only DIRECT so global mode
@@ -47,7 +52,11 @@ func BuildRuntimeConfig(srcPath, mode string, tunOn bool, workDir string) (runti
 		// Not a Clash config: the file is a subscription (base64 or a plain
 		// URI list). clash.meta only understands those through a proxy-provider,
 		// so wrap the file instead of parsing it as the top-level config.
-		doc = subscriptionDoc(srcPath)
+		subPath := filepath.Join(workDir, ".manax.subscription")
+		if err := config.WriteFile(subPath, data); err != nil {
+			return "", "", err
+		}
+		doc = subscriptionDoc(subPath)
 	}
 	if doc == nil {
 		doc = map[string]any{}
@@ -59,6 +68,34 @@ func BuildRuntimeConfig(srcPath, mode string, tunOn bool, workDir string) (runti
 		doc["mode"] = mode
 	}
 	tun.Apply(doc, tunOn)
+	groups, _ := doc["proxy-groups"].([]any)
+	var userGroups []any
+	for _, item := range groups {
+		g, _ := item.(map[string]any)
+		if g["name"] == NodeGroupName {
+			continue
+		}
+		if g["type"] == "select" {
+			proxies, _ := g["proxies"].([]any)
+			hasNodes := g["name"] == "GLOBAL" || g["use"] != nil || g["include-all"] == true ||
+				g["include-all-proxies"] == true || g["include-all-providers"] == true ||
+				slices.ContainsFunc(proxies, func(p any) bool {
+					name, _ := p.(string)
+					return !IsBuiltin(name)
+				})
+			if hasNodes && !slices.ContainsFunc(proxies, func(p any) bool { return p == NodeGroupName }) {
+				g["proxies"] = append(proxies, NodeGroupName)
+			}
+		}
+		userGroups = append(userGroups, item)
+	}
+	doc["proxy-groups"] = append(userGroups, map[string]any{"name": NodeGroupName, "type": "select", "include-all": true})
+	profile, _ := doc["profile"].(map[string]any)
+	if profile == nil {
+		profile = map[string]any{}
+	}
+	profile["store-selected"] = true
+	doc["profile"] = profile
 
 	port := proxyPort(doc)
 	if port == 0 {
@@ -72,7 +109,7 @@ func BuildRuntimeConfig(srcPath, mode string, tunOn bool, workDir string) (runti
 		return "", "", err
 	}
 	runtimePath = filepath.Join(workDir, RuntimeFileName)
-	if err := os.WriteFile(runtimePath, out, 0600); err != nil {
+	if err := config.WriteFile(runtimePath, out); err != nil {
 		return "", "", err
 	}
 	return runtimePath, proxyAddr, nil
@@ -120,4 +157,13 @@ func toInt(v any) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// IsBuiltin reports whether name is a built-in kernel policy.
+func IsBuiltin(name string) bool {
+	switch name {
+	case "DIRECT", "REJECT", "GLOBAL", "COMPATIBLE", "PASS", "PASS-RULE":
+		return true
+	}
+	return false
 }

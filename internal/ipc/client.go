@@ -13,7 +13,7 @@ import (
 )
 
 var httpClient = &http.Client{
-	Timeout: 60 * time.Second,
+	Timeout: 5 * time.Second,
 	Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialContext(ctx)
@@ -21,13 +21,22 @@ var httpClient = &http.Client{
 	},
 }
 
-func post[Req any, Resp any](path string, req Req) (Resp, error) {
+func post[Req any, Resp any](ctx context.Context, path string, req Req) (Resp, error) {
 	var zero Resp
 	body, err := json.Marshal(req)
 	if err != nil {
 		return zero, fmt.Errorf("IPC marshal: %w", err)
 	}
-	resp, err := httpClient.Post("http://manax"+path, "application/json", bytes.NewReader(body))
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://manax"+path, bytes.NewReader(body))
+	if err != nil {
+		return zero, err
+	}
+	r.Header.Set("Content-Type", "application/json")
+	client := *httpClient
+	if path == "/apply" {
+		client.Timeout = 60 * time.Second // Kernel initialization may take longer.
+	}
+	resp, err := client.Do(r)
 	if err != nil {
 		if !isServicePresent() {
 			return zero, fmt.Errorf("%s", locale.T("err.service_not_running"))
@@ -42,48 +51,48 @@ func post[Req any, Resp any](path string, req Req) (Resp, error) {
 }
 
 // PostStatus queries the daemon status.
-func PostStatus(req StatusRequest) (StatusResponse, error) {
-	return post[StatusRequest, StatusResponse]("/status", req)
+func PostStatus(ctx context.Context, req StatusRequest) (StatusResponse, error) {
+	return post[StatusRequest, StatusResponse](ctx, "/status", req)
 }
 
 // PostApply tells the daemon to load a config.
 func PostApply(req ApplyRequest) (ApplyResponse, error) {
-	return post[ApplyRequest, ApplyResponse]("/apply", req)
+	return post[ApplyRequest, ApplyResponse](context.Background(), "/apply", req)
 }
 
 // PostMode sets the running mode.
 func PostMode(req ModeRequest) (SimpleResponse, error) {
-	return post[ModeRequest, SimpleResponse]("/mode", req)
+	return post[ModeRequest, SimpleResponse](context.Background(), "/mode", req)
 }
 
 // PostSystem toggles the system proxy.
 func PostSystem(req SystemRequest) (SimpleResponse, error) {
-	return post[SystemRequest, SimpleResponse]("/system", req)
+	return post[SystemRequest, SimpleResponse](context.Background(), "/system", req)
 }
 
 // PostTun toggles TUN.
 func PostTun(req TunRequest) (SimpleResponse, error) {
-	return post[TunRequest, SimpleResponse]("/tun", req)
+	return post[TunRequest, SimpleResponse](context.Background(), "/tun", req)
 }
 
-// PostNodes lists proxy groups.
+// PostNodes lists all nodes.
 func PostNodes() (NodesResponse, error) {
-	return post[NodesRequest, NodesResponse]("/nodes", NodesRequest{})
+	return post[NodesRequest, NodesResponse](context.Background(), "/nodes", NodesRequest{})
 }
 
 // PostDelay measures one node.
-func PostDelay(req DelayRequest) (DelayResponse, error) {
-	return post[DelayRequest, DelayResponse]("/delay", req)
+func PostDelay(ctx context.Context, req DelayRequest) (DelayResponse, error) {
+	return post[DelayRequest, DelayResponse](ctx, "/delay", req)
 }
 
-// PostSelect selects a node in a group.
+// PostSelect selects a node.
 func PostSelect(req SelectRequest) (SimpleResponse, error) {
-	return post[SelectRequest, SimpleResponse]("/select", req)
+	return post[SelectRequest, SimpleResponse](context.Background(), "/select", req)
 }
 
 // PostStop asks the daemon to stop the kernel and clear the system proxy.
 func PostStop(req StopRequest) (SimpleResponse, error) {
-	return post[StopRequest, SimpleResponse]("/stop", req)
+	return post[StopRequest, SimpleResponse](context.Background(), "/stop", req)
 }
 
 // IsRunning reports whether the daemon socket is reachable.
@@ -91,6 +100,6 @@ func IsRunning() bool {
 	if !isServicePresent() {
 		return false
 	}
-	_, err := PostStatus(StatusRequest{})
+	_, err := PostStatus(context.Background(), StatusRequest{})
 	return err == nil
 }

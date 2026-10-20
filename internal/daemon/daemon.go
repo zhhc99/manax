@@ -4,10 +4,12 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -18,6 +20,17 @@ import (
 	"github.com/zhhc99/manax/internal/systemproxy"
 )
 
+// runtimeState saves restart information; the daemon manages current state.
+type runtimeState struct {
+	ipc.ApplyRequest
+	Stopped bool `json:"stopped"`
+}
+
+type delayInfo struct {
+	ms      int
+	updated time.Time
+}
+
 type Daemon struct {
 	applyMu sync.Mutex
 	mu      sync.Mutex
@@ -25,26 +38,19 @@ type Daemon struct {
 	kernel *core.Kernel
 	api    *core.Client
 
-	configPath string
-	configName string
-	workDir    string
-	mode       string
-	tunOn      bool
+	runtimeState
+	proxyAddr string
 
-	systemProxy bool
-	proxyAddr   string
-	proxyUser   config.UserInfo
-
-	delays map[string]int
+	delays map[string]delayInfo
 }
 
 // New builds a daemon with no user config loaded.
 func New() *Daemon {
 	return &Daemon{
-		kernel: core.NewKernel(config.KernelPath, filepath.Join(config.WorkDir, "kernel.log")),
-		api:    core.NewClient(core.APIBase, ""),
-		mode:   "rule",
-		delays: map[string]int{},
+		kernel:       core.NewKernel(config.KernelPath, filepath.Join(config.WorkDir, "kernel.log")),
+		api:          core.NewClient(core.APIBase, ""),
+		runtimeState: runtimeState{ApplyRequest: ipc.ApplyRequest{Mode: "rule"}},
+		delays:       map[string]delayInfo{},
 	}
 }
 
@@ -63,10 +69,24 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		}
 		return err
 	}
+	defer srv.Close()
+	data, err := os.ReadFile(filepath.Join(config.WorkDir, "state.json"))
+	if err == nil {
+		if err := json.Unmarshal(data, &d.runtimeState); err != nil {
+			return err
+		}
+		saved := d.runtimeState
+		if saved.ConfigPath != "" && !saved.Stopped {
+			if err := d.apply(saved.ApplyRequest); err != nil {
+				return err
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	go srv.Serve()
 	<-ctx.Done()
 	d.Shutdown()
-	srv.Close()
 	return nil
 }
 
@@ -83,12 +103,13 @@ func (d *Daemon) HandleStatus(_ ipc.StatusRequest) ipc.StatusResponse {
 func (d *Daemon) status() ipc.StatusResponse {
 	d.mu.Lock()
 	resp := ipc.StatusResponse{
-		Mode:        d.mode,
-		SystemProxy: d.systemProxy,
+		ConfigName:  d.ConfigName,
+		Mode:        d.Mode,
+		SystemProxy: d.SystemProxy,
 		ProxyAddr:   d.proxyAddr,
-		TUN:         d.tunOn,
+		TUN:         d.TUN,
 	}
-	delays := make(map[string]int, len(d.delays))
+	delays := make(map[string]delayInfo, len(d.delays))
 	for k, v := range d.delays {
 		delays[k] = v
 	}
@@ -97,12 +118,13 @@ func (d *Daemon) status() ipc.StatusResponse {
 	if d.kernel.Running() {
 		resp.KernelRunning = true
 		resp.KernelVersion = core.VersionLine(config.KernelPath)
-		if group, node, ok := d.currentNode(); ok {
-			resp.Group, resp.Node = group, node
-			if ms, known := delays[node]; known {
+		if node := d.currentNode(); node != "" {
+			resp.Node = node
+			if delay, known := delays[node]; known {
 				resp.DelayKnown = true
-				if ms >= 0 {
-					resp.DelayMS = ms
+				resp.DelayUpdated = delay.updated
+				if delay.ms >= 0 {
+					resp.DelayMS = delay.ms
 					resp.DelayOK = true
 				}
 			}
@@ -111,28 +133,20 @@ func (d *Daemon) status() ipc.StatusResponse {
 	return resp
 }
 
-func (d *Daemon) currentNode() (string, string, bool) {
+func (d *Daemon) currentNode() string {
 	proxies, err := d.api.Proxies()
 	if err != nil {
-		return "", "", false
+		return ""
 	}
-	var names []string
-	for name, p := range proxies {
-		if p.Type == "Selector" && name != "GLOBAL" && p.Now != "" && len(p.All) > 0 {
-			names = append(names, name)
-		}
-	}
-	if len(names) == 0 {
-		return "", "", false
-	}
-	sort.Strings(names)
-	p := proxies[names[0]]
-	return p.Name, p.Now, true
+	return proxies[core.NodeGroupName].Now
 }
 
 func (d *Daemon) HandleApply(req ipc.ApplyRequest) ipc.ApplyResponse {
 	if err := d.apply(req); err != nil {
 		return ipc.ApplyResponse{Err: err.Error()}
+	}
+	if resp := d.persist(); resp.Err != "" {
+		return ipc.ApplyResponse{Err: resp.Err}
 	}
 	return ipc.ApplyResponse{Status: d.status()}
 }
@@ -154,13 +168,13 @@ func (d *Daemon) apply(req ipc.ApplyRequest) error {
 	}
 
 	d.mu.Lock()
-	d.configPath = req.ConfigPath
-	d.configName = req.ConfigName
-	d.workDir = config.WorkDir
-	d.mode = req.Mode
-	d.tunOn = req.TUN
+	d.ConfigPath = runtimePath
+	d.ConfigName = req.ConfigName
+	d.Mode = req.Mode
+	d.TUN = req.TUN
+	d.Stopped = false
 	d.proxyAddr = proxyAddr
-	d.delays = map[string]int{} // cached latencies belong to the previous config
+	d.delays = map[string]delayInfo{} // cached latencies belong to the previous config
 	d.mu.Unlock()
 	d.api.ResetProviders() // provider membership belongs to the loaded config
 
@@ -206,16 +220,16 @@ func (d *Daemon) enableProxy(u config.UserInfo) error {
 		return err
 	}
 	d.mu.Lock()
-	d.systemProxy = true
-	d.proxyUser = u
+	d.SystemProxy = true
+	d.User = u
 	d.mu.Unlock()
 	return nil
 }
 
 func (d *Daemon) disableProxy() error {
 	d.mu.Lock()
-	on := d.systemProxy
-	u := d.proxyUser
+	on := d.SystemProxy
+	u := d.User
 	d.mu.Unlock()
 	if !on {
 		return nil
@@ -224,74 +238,63 @@ func (d *Daemon) disableProxy() error {
 		return err
 	}
 	d.mu.Lock()
-	d.systemProxy = false
+	d.SystemProxy = false
 	d.mu.Unlock()
 	return nil
 }
 
 func (d *Daemon) HandleMode(req ipc.ModeRequest) ipc.SimpleResponse {
+	d.applyMu.Lock()
+	defer d.applyMu.Unlock()
 	if req.Mode == "" {
 		return ipc.SimpleResponse{Err: locale.T("err.invalid_mode", req.Mode)}
 	}
-	if !d.kernel.Running() {
-		d.mu.Lock()
-		d.mode = req.Mode
-		d.mu.Unlock()
-		return ipc.SimpleResponse{}
-	}
-	if err := d.api.SetMode(req.Mode); err != nil {
-		return ipc.SimpleResponse{Err: err.Error()}
-	}
-	if req.Mode == "global" {
-		d.syncGlobal()
+	if d.kernel.Running() {
+		if err := d.api.SetMode(req.Mode); err != nil {
+			return ipc.SimpleResponse{Err: err.Error()}
+		}
+		if req.Mode == "global" {
+			d.syncGlobal()
+		}
 	}
 	d.mu.Lock()
-	d.mode = req.Mode
+	d.Mode = req.Mode
 	d.mu.Unlock()
-	return ipc.SimpleResponse{}
+	return d.persist()
 }
 
-// syncGlobal makes global mode use the user's current node. Users only think in
-// terms of a single selected node, so GLOBAL is pointed at the active group
-// instead of keeping its own independent selection.
+// syncGlobal makes global mode use the same internal selector.
 func (d *Daemon) syncGlobal() {
-	if group, _, ok := d.currentNode(); ok {
-		_ = d.api.Select("GLOBAL", group)
-	}
+	_ = d.api.Select("GLOBAL", core.NodeGroupName)
 }
 
 func (d *Daemon) HandleSystem(req ipc.SystemRequest) ipc.SimpleResponse {
+	d.applyMu.Lock()
+	defer d.applyMu.Unlock()
+	var err error
 	if req.On {
-		if err := d.enableProxy(req.User); err != nil {
-			return ipc.SimpleResponse{Err: err.Error()}
-		}
-		return ipc.SimpleResponse{}
+		err = d.enableProxy(req.User)
+	} else {
+		err = d.disableProxy()
 	}
-	if err := d.disableProxy(); err != nil {
-		return ipc.SimpleResponse{Err: err.Error()}
-	}
-	return ipc.SimpleResponse{}
-}
-
-func (d *Daemon) HandleTun(req ipc.TunRequest) ipc.SimpleResponse {
-	d.mu.Lock()
-	cfg, name, mode, sp, user := d.configPath, d.configName, d.mode, d.systemProxy, d.proxyUser
-	d.mu.Unlock()
-	if cfg == "" {
-		return ipc.SimpleResponse{Err: locale.T("err.no_active")}
-	}
-	err := d.apply(ipc.ApplyRequest{
-		ConfigPath:  cfg,
-		ConfigName:  name,
-		Mode:        mode,
-		SystemProxy: sp,
-		TUN:         req.On,
-		User:        user,
-	})
 	if err != nil {
 		return ipc.SimpleResponse{Err: err.Error()}
 	}
-	return ipc.SimpleResponse{}
+	return d.persist()
+}
+
+func (d *Daemon) HandleTun(req ipc.TunRequest) ipc.SimpleResponse {
+	d.applyMu.Lock()
+	defer d.applyMu.Unlock()
+	if d.kernel.Running() {
+		if err := d.api.SetTUN(req.On); err != nil {
+			return ipc.SimpleResponse{Err: err.Error()}
+		}
+	}
+	d.mu.Lock()
+	d.TUN = req.On
+	d.mu.Unlock()
+	return d.persist()
 }
 
 func (d *Daemon) HandleNodes(_ ipc.NodesRequest) ipc.NodesResponse {
@@ -299,21 +302,13 @@ func (d *Daemon) HandleNodes(_ ipc.NodesRequest) ipc.NodesResponse {
 	if err != nil {
 		return ipc.NodesResponse{Err: err.Error()}
 	}
-	var groups []ipc.NodeGroup
-	for name, p := range proxies {
-		if p.All == nil {
-			continue
-		}
-		groups = append(groups, ipc.NodeGroup{Name: name, Type: p.Type, Now: p.Now, Nodes: p.All})
-	}
-	sort.Slice(groups, func(i, j int) bool { return groups[i].Name < groups[j].Name })
 	d.mu.Lock()
 	delays := make(map[string]int, len(d.delays))
 	for k, v := range d.delays {
-		delays[k] = v
+		delays[k] = v.ms
 	}
 	d.mu.Unlock()
-	return ipc.NodesResponse{Groups: groups, Delays: delays}
+	return ipc.NodesResponse{Nodes: proxies[core.NodeGroupName].All, Delays: delays}
 }
 
 func (d *Daemon) HandleDelay(req ipc.DelayRequest) ipc.DelayResponse {
@@ -323,10 +318,9 @@ func (d *Daemon) HandleDelay(req ipc.DelayRequest) ipc.DelayResponse {
 	ms, err := d.api.Delay(req.Name, req.Timeout, req.URL)
 	d.mu.Lock()
 	if err != nil {
-		d.delays[req.Name] = -1
-	} else {
-		d.delays[req.Name] = ms
+		ms = -1
 	}
+	d.delays[req.Name] = delayInfo{ms: ms, updated: time.Now()}
 	d.mu.Unlock()
 	if err != nil {
 		return ipc.DelayResponse{Err: err.Error()}
@@ -335,8 +329,21 @@ func (d *Daemon) HandleDelay(req ipc.DelayRequest) ipc.DelayResponse {
 }
 
 func (d *Daemon) HandleSelect(req ipc.SelectRequest) ipc.SimpleResponse {
-	if err := d.api.Select(req.Group, req.Node); err != nil {
+	d.applyMu.Lock()
+	defer d.applyMu.Unlock()
+	if err := d.api.Select(core.NodeGroupName, req.Node); err != nil {
 		return ipc.SimpleResponse{Err: err.Error()}
+	}
+	proxies, err := d.api.Proxies()
+	if err != nil {
+		return ipc.SimpleResponse{Err: err.Error()}
+	}
+	for name, p := range proxies {
+		if p.Type == "Selector" && name != core.NodeGroupName && slices.Contains(p.All, core.NodeGroupName) {
+			if err := d.api.Select(name, core.NodeGroupName); err != nil {
+				return ipc.SimpleResponse{Err: err.Error()}
+			}
+		}
 	}
 	return ipc.SimpleResponse{}
 }
@@ -349,7 +356,26 @@ func (d *Daemon) HandleStop(_ ipc.StopRequest) ipc.SimpleResponse {
 		return ipc.SimpleResponse{Err: err.Error()}
 	}
 	d.mu.Lock()
-	d.tunOn = false
+	d.TUN = false
+	d.Stopped = true
 	d.mu.Unlock()
+	return d.persist()
+}
+
+func (d *Daemon) persist() ipc.SimpleResponse {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.ConfigPath != "" {
+		if _, _, err := core.BuildRuntimeConfig(d.ConfigPath, d.Mode, d.TUN, config.WorkDir); err != nil {
+			return ipc.SimpleResponse{Err: err.Error()}
+		}
+	}
+	data, err := json.Marshal(d.runtimeState)
+	if err == nil {
+		err = config.WriteFile(filepath.Join(config.WorkDir, "state.json"), data)
+	}
+	if err != nil {
+		return ipc.SimpleResponse{Err: err.Error()}
+	}
 	return ipc.SimpleResponse{}
 }

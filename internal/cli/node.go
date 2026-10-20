@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zhhc99/manax/internal/core"
 	"github.com/zhhc99/manax/internal/ipc"
 	"github.com/zhhc99/manax/internal/locale"
 )
@@ -42,7 +44,7 @@ func runNode(args []string) error {
 // runNodeList prints the nodes using the daemon's last measured latencies,
 // testing once if nothing has been measured yet.
 func runNodeList(_ []string) error {
-	_, nodes, delays, err := resolveNodes()
+	nodes, delays, err := resolveNodes()
 	if err != nil {
 		return err
 	}
@@ -64,7 +66,7 @@ func anyKnown(nodes []string, delays map[string]int) bool {
 
 // runNodeTest measures every node in parallel, then prints the list.
 func runNodeTest(_ []string) error {
-	_, nodes, _, err := resolveNodes()
+	nodes, _, err := resolveNodes()
 	if err != nil {
 		return err
 	}
@@ -74,7 +76,7 @@ func runNodeTest(_ []string) error {
 
 // testAll measures the current nodes without printing the list.
 func testAll() error {
-	_, nodes, _, err := resolveNodes()
+	nodes, _, err := resolveNodes()
 	if err != nil {
 		return err
 	}
@@ -90,7 +92,7 @@ func runNodeUse(args []string) error {
 	if err != nil {
 		return fmt.Errorf(locale.T("err.invalid_arg"), args[0])
 	}
-	g, nodes, _, err := resolveNodes()
+	nodes, _, err := resolveNodes()
 	if err != nil {
 		return err
 	}
@@ -98,7 +100,7 @@ func runNodeUse(args []string) error {
 		return fmt.Errorf(locale.T("err.node_index"), n)
 	}
 	node := nodes[n-1]
-	sel, err := ipc.PostSelect(ipc.SelectRequest{Group: g.Name, Node: node})
+	sel, err := ipc.PostSelect(ipc.SelectRequest{Node: node})
 	if err != nil {
 		return err
 	}
@@ -150,7 +152,7 @@ func testNodes(nodes []string) map[string]int {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			r, err := ipc.PostDelay(ipc.DelayRequest{Name: name, Timeout: delayTimeoutMS})
+			r, err := ipc.PostDelay(context.Background(), ipc.DelayRequest{Name: name, Timeout: delayTimeoutMS})
 			mu.Lock()
 			switch {
 			case err != nil:
@@ -210,70 +212,28 @@ func printNodes(nodes []string, delays map[string]int) {
 	}
 }
 
-// resolveNodes returns the primary group, its sorted nodes, and the daemon's
-// cached latencies. The kernel's group concept is hidden from users, so there
-// is exactly one group to consider.
-func resolveNodes() (ipc.NodeGroup, []string, map[string]int, error) {
+// resolveNodes returns all actual nodes, deduplicated and sorted.
+func resolveNodes() ([]string, map[string]int, error) {
 	resp, err := ipc.PostNodes()
 	if err != nil {
-		return ipc.NodeGroup{}, nil, nil, err
+		return nil, nil, err
 	}
 	if resp.Err != "" {
-		return ipc.NodeGroup{}, nil, nil, fmt.Errorf(locale.T("err.daemon"), resp.Err)
-	}
-	g, err := pickGroup(resp.Groups)
-	if err != nil {
-		return ipc.NodeGroup{}, nil, nil, err
-	}
-	nodes := groupNodes(g, resp.Groups)
-	if len(nodes) == 0 {
-		return ipc.NodeGroup{}, nil, nil, fmt.Errorf("%s", locale.T("err.no_nodes"))
-	}
-	return g, nodes, resp.Delays, nil
-}
-
-// pickGroup returns the primary selector, skipping the kernel's built-in
-// GLOBAL group.
-func pickGroup(groups []ipc.NodeGroup) (ipc.NodeGroup, error) {
-	for _, g := range groups {
-		if g.Type == "Selector" && g.Name != "GLOBAL" && len(g.Nodes) > 0 {
-			return g, nil
-		}
-	}
-	for _, g := range groups {
-		if g.Name != "GLOBAL" && len(g.Nodes) > 0 {
-			return g, nil
-		}
-	}
-	return ipc.NodeGroup{}, fmt.Errorf("%s", locale.T("err.no_nodes"))
-}
-
-// groupNodes returns a group's real nodes, sorted. Group names and built-ins
-// are excluded.
-func groupNodes(g ipc.NodeGroup, groups []ipc.NodeGroup) []string {
-	groupNames := map[string]bool{}
-	for _, x := range groups {
-		groupNames[x.Name] = true
+		return nil, nil, fmt.Errorf(locale.T("err.daemon"), resp.Err)
 	}
 	seen := map[string]bool{}
-	var out []string
-	for _, n := range g.Nodes {
-		if groupNames[n] || isSpecial(n) || seen[n] {
-			continue
+	var nodes []string
+	for _, node := range resp.Nodes {
+		if !core.IsBuiltin(node) && !seen[node] {
+			seen[node] = true
+			nodes = append(nodes, node)
 		}
-		seen[n] = true
-		out = append(out, n)
 	}
-	sort.Strings(out)
-	return out
-}
-
-func isSpecial(name string) bool {
-	switch name {
-	case "DIRECT", "REJECT", "GLOBAL", "COMPATIBLE", "PASS", "PASS-RULE":
-		return true
+	if len(nodes) == 0 {
+		return nil, nil, fmt.Errorf("%s", locale.T("err.no_nodes"))
 	}
-	return false
+	sort.Strings(nodes)
+	return nodes, resp.Delays, nil
 }
 
 func formatResult(v int) string {

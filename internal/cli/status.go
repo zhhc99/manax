@@ -1,19 +1,24 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/zhhc99/manax/internal/config"
+	"github.com/zhhc99/manax/internal/core"
 	"github.com/zhhc99/manax/internal/ipc"
 	"github.com/zhhc99/manax/internal/locale"
 )
 
 func runStatus(_ []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	st, _ := config.LoadState()
 	if st == nil {
 		st = &config.State{Active: config.DirectConfigName}
 	}
-	resp, err := ipc.PostStatus(ipc.StatusRequest{User: config.CurrentUser()})
+	resp, err := ipc.PostStatus(ctx, ipc.StatusRequest{User: config.CurrentUser()})
 
 	rows := [][2]string{}
 	configName := st.Active
@@ -36,6 +41,12 @@ func runStatus(_ []string) error {
 		return nil
 	}
 
+	if resp.Node != "" && !core.IsBuiltin(resp.Node) && time.Since(resp.DelayUpdated) >= time.Minute {
+		delay, err := ipc.PostDelay(ctx, ipc.DelayRequest{Name: resp.Node})
+		resp.DelayKnown = true
+		resp.DelayOK = err == nil && delay.Err == ""
+		resp.DelayMS = delay.Delay
+	}
 	service := serviceLabel(locale.T("msg.service_running"))
 	kernel := locale.T("msg.kernel_stopped")
 	if resp.KernelRunning {
@@ -45,7 +56,8 @@ func runStatus(_ []string) error {
 			kernel = locale.T("msg.service_running")
 		}
 	}
-	mode := st.EffectiveMode()
+	configName = resp.ConfigName
+	mode := resp.Mode
 	proxy := locale.T("msg.proxy_off")
 	if resp.SystemProxy {
 		proxy = paint(fmt.Sprintf(locale.T("msg.proxy_on"), resp.ProxyAddr), colorSuccess)
